@@ -28,6 +28,7 @@ pip install -e ".[dev]"
 efficient-ally examples/slow_examples.py          # human-readable report
 efficient-ally examples/slow_examples.py --json   # the format the website will use
 pytest                                            # run the tests
+python tests/test_corpus.py                       # score the estimator on the corpus
 ruff check . && ruff format .                     # lint and format
 ```
 
@@ -71,6 +72,7 @@ source ─▶ ProgramModel ─▶ rules ─▶ findings ─┐
 | `src/efficient_ally/cli.py` | The `efficient-ally` command. |
 | `examples/slow_examples.py` | One slow function per pattern on the roadmap, detected or not yet. |
 | `tests/` | Unit tests. Rewrite tests run the original and the rewritten code and check they give the same answer. |
+| `tests/corpus/` | Hand-labeled slow/fast programs with their true big-O, scored by `tests/test_corpus.py`. See its [README](tests/corpus/README.md). |
 
 ## Adding a rule
 

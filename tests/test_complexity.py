@@ -22,6 +22,29 @@ def test_formatting():
     assert str(ONE) == "O(1)"
     assert str(Complexity.of("n", "n")) == "O(n^2)"
     assert str(Complexity.of("a") * Complexity.of("b") + Complexity.of("c")) == "O(a * b + c)"
+    assert str(Complexity.of("n", "n - i")) == "O(n * (n - i))"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "O(1)",
+        "O(n^2)",
+        "O(len(a) * len(b) + n)",
+        "O(len(nums) * log(len(nums)))",
+        "O(2^n)",
+        "O(2^(cols + rows))",
+        "O(n * (n - i))",
+        "O(? * len(tasks))",
+    ],
+)
+def test_parse_reads_back_what_str_prints(text):
+    assert str(Complexity.parse(text)) == text
+
+
+def test_parse_ignores_order_and_simplifies():
+    assert Complexity.parse("O(n * m + m)") == Complexity.of("m", "n")
+    assert Complexity.parse("O(len(a)^2)") == Complexity.of("len(a)", "len(a)")
 
 
 @pytest.mark.parametrize(

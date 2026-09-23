@@ -30,6 +30,27 @@ class Complexity:
         """A single term: ``Complexity.of("n", "m")`` is O(n * m), ``Complexity.of()`` is O(1)."""
         return cls(frozenset({tuple(sorted(factors))}))
 
+    @classmethod
+    def parse(cls, text: str) -> Complexity:
+        """The inverse of ``str()``: ``Complexity.parse("O(len(a) * n^2 + m)")``."""
+        text = text.strip()
+        if not (text.startswith("O(") and text.endswith(")")):
+            raise ValueError(f"not a big-O expression: {text!r}")
+        total = None
+        for term in _split_top_level(text[2:-1], " + "):
+            factors = []
+            for factor in _split_top_level(term.strip(), " * "):
+                base, _, power = factor.rpartition("^")
+                count = 1
+                if base and power.isdigit():  # "n^2"; but "2^n" is a single factor
+                    factor, count = base, int(power)
+                if _is_wrapped(factor):
+                    factor = factor[1:-1]
+                if factor != "1":
+                    factors += [factor] * count
+            total = cls.of(*factors) if total is None else total + cls.of(*factors)
+        return total
+
     def __add__(self, other: Complexity) -> Complexity:
         return Complexity(_simplify(self.terms | other.terms))
 
@@ -52,7 +73,43 @@ ONE = Complexity.of()
 def _format_term(term: Term) -> str:
     if not term:
         return "1"
-    return " * ".join(f if n == 1 else f"{f}^{n}" for f, n in Counter(term).items())
+    return " * ".join(_format_factor(f, n) for f, n in Counter(term).items())
+
+
+def _format_factor(factor: str, power: int) -> str:
+    if len(_split_top_level(factor, " ")) > 1:
+        factor = f"({factor})"  # so `n * (n - i)` doesn't print as `n * n - i`
+    return factor if power == 1 else f"{factor}^{power}"
+
+
+def _split_top_level(text: str, separator: str) -> list[str]:
+    """Split ``text`` on ``separator``, except inside brackets."""
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(text):
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+        elif depth == 0 and text.startswith(separator, i):
+            parts.append(text[start:i])
+            i += len(separator)
+            start = i
+            continue
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def _is_wrapped(text: str) -> bool:
+    """True for ``(n - i)``, but not ``(a) - (b)``."""
+    if not (text.startswith("(") and text.endswith(")")):
+        return False
+    depth = 0
+    for i, char in enumerate(text):
+        depth += (char in "([{") - (char in ")]}")
+        if depth == 0 and i < len(text) - 1:
+            return False
+    return True
 
 
 def _simplify(terms: Iterable[Term]) -> frozenset[Term]:
