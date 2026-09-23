@@ -21,7 +21,7 @@ order: each month builds on the one before.
 | Month | Dates | Theme | Checkpoint |
 |---|---|---|---|
 | 0 | Sep 23–30 | Setup | ✅ Skeleton: program model, big-O algebra, loop estimator, 2 rules, CLI, CI |
-| 1 | Oct | Foundations and test corpus | Estimator right on ≥ 50 of 65 corpus functions (30 at the start) |
+| 1 | Oct | Foundations and test corpus | Estimator right on ≥ 80% of corpus functions (46% at the start, 72% now) |
 | 2 | Nov | Loop analysis and local inefficiencies | `while` bounds, function calls, recursion, 3 new rules |
 | 3 | Dec | Data-structure recommendations | All 9 patterns detected; < 10% false positives on real code |
 | 4 | Jan | Rewrites you can trust | ≥ 5 rules with rewrites that pass differential tests; speedups measured |
@@ -36,10 +36,10 @@ The skeleton works end to end. This month makes the foundations solid and
 builds the test data everything else will be measured against.
 
 - ✅ **Corpus and scoreboard** (done early, so there's a baseline to measure
-  against). `tests/corpus/` has 35 programs (65 labeled functions) covering all
-  9 patterns, loop analysis, and code that's already fine. Run
-  `python tests/test_corpus.py` for the score. **Baseline: 30/65 right**; the
-  rules flag 6 of 30 slow versions, with 0 false alarms.
+  against). `tests/corpus/` covers all 9 patterns, loop analysis, and code
+  that's already fine: 35 programs to start with, plus 9 with one obvious flaw
+  each (sorting to find the max, `x in list(d.keys())`, re-summing inside a loop, …).
+  Run `python tests/test_corpus.py` for the score. **Baseline: 30/65 right (46%).**
 - **Week 1: learn the codebase.** Run `efficient-ally examples/slow_examples.py`
   and `python tests/test_corpus.py`, read `model.py` and `complexity.py`, and
   step through a test in a debugger. Background reading: *Green Tree Snakes* (a
@@ -51,15 +51,19 @@ builds the test data everything else will be measured against.
 - The rest of the month works through `KNOWN_MISSES` in `tests/test_corpus.py`,
   biggest wins first (the scoreboard prints how many misses each kind of fix
   would clear):
-  - **Weeks 1–2: operation costs (16 misses)** in `complexity.py`: `sorted` and
-    `.sort()` (n log n), `set()`/`list()`/`Counter()` of a collection, `min`/`max`/`sum`
-    of a collection, slicing `a[i:j]`, `+` on lists and strings, `heapq` functions,
-    `x in` a slice or string. This needs `log` factors, with simplification that
-    knows `log(n)` grows slower than `n`, so `O(n log n + n^2)` becomes `O(n^2)`.
-  - **Weeks 2–3: collection sizes and aliases (11 misses)** in `model.py`:
+  - ✅ **Weeks 1–2: operation costs** in `complexity.py`: `sorted` and `.sort()`
+    (n log n), `set()`/`list()`/`Counter()`/`min`/`max`/`sum` of a collection,
+    slicing, `+` on lists, `heapq` and `bisect`, string methods like `count` and
+    `split`, and `in` on a slice. `log(n)` now counts as growing more slowly than
+    `n`, so `O(n log n + n^2)` simplifies to `O(n^2)`. **Score: 60/83 (72%).**
+    Not included yet: `+` on strings (the string rule handles loops) and
+    `[0] * n`.
+  - **Weeks 2–3: collection sizes and aliases (14 misses)** in `model.py`:
     `n = len(items)` means `n` *is* `len(items)`; `remaining = list(nums)` and
-    `nums[1:]` are about as long as `nums`; a list that gets one `append` per
-    iteration of a loop over `items` ends up at most `len(items)` long.
+    `ordered = sorted(nums)` are as long as `nums`; a list that gets one `append`
+    per iteration of a loop over `items` ends up at most `len(items)` long. Some
+    of these showed up only once operation costs were counted: `"".join(lines)`
+    is correctly charged `len(lines)`, but the analyzer can't tell that's `height`.
   - **Weeks 3–4: loop bounds (4 misses)** in `complexity.py`: a bound that
     depends on an outer loop variable (`for i in range(n): for j in range(i)`)
     is still at most `n`; `min(k, x)` is at most `k`; `range(n ** 2)` gives `n^2`.
@@ -68,8 +72,8 @@ builds the test data everything else will be measured against.
     over a list of lists makes `row` a list.
 - `while` loops and recursion (9 misses) are month 2.
 
-**Checkpoint:** estimator right on ≥ 50 of 65 corpus functions (fixing
-everything above would give 56); ≥ 10 real-code programs added; CI green.
+**Checkpoint:** estimator right on ≥ 80% of corpus functions (fixing everything
+above would give 74/83, or 89%); ≥ 10 real-code programs added; CI green.
 
 ## Month 2: Loop analysis and local inefficiencies (November)
 

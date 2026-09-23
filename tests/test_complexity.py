@@ -18,6 +18,14 @@ def test_adding_keeps_only_the_fastest_growing_terms():
     assert str(n + m) == "O(m + n)"
 
 
+def test_log_grows_slower_than_its_argument():
+    n, log_n, log_k = Complexity.of("n"), Complexity.of("log(n)"), Complexity.of("log(k)")
+    assert n * log_n + n * n == n * n
+    assert log_n + n == n
+    assert n * log_n + n == n * log_n
+    assert str(n + log_k) == "O(log(k) + n)"  # unrelated inputs: keep both
+
+
 def test_formatting():
     assert str(ONE) == "O(1)"
     assert str(Complexity.of("n", "n")) == "O(n^2)"
@@ -148,6 +156,85 @@ def test_parse_ignores_order_and_simplifies():
             """,
             "O(1)",
             id="defining a nested function is free",
+        ),
+        # --- Built-ins with known costs ---
+        pytest.param(
+            """
+            def f(a: list):
+                return sorted(a)
+            """,
+            "O(len(a) * log(len(a)))",
+            id="sorted is n log n",
+        ),
+        pytest.param(
+            """
+            def f(a: list, queries: list):
+                for q in queries:
+                    a.sort()
+            """,
+            "O(len(a) * len(queries) * log(len(a)))",
+            id="list.sort inside a loop",
+        ),
+        pytest.param(
+            """
+            def f(a: list, b):
+                return set(a), max(a), sum(b), max(1, 2)
+            """,
+            "O(len(a) + len(b))",
+            id="set, max, sum go through their argument; max(1, 2) doesn't",
+        ),
+        pytest.param(
+            """
+            def f(a: list):
+                return a[1:], a[:3], a[-3:]
+            """,
+            "O(len(a))",
+            id="slices copy, but short constant slices are O(1)",
+        ),
+        pytest.param(
+            """
+            def f(a: list, b: list):
+                return a + b
+            """,
+            "O(len(a) + len(b))",
+            id="adding lists copies both",
+        ),
+        pytest.param(
+            """
+            def f(names: list, words):
+                return [w for w in words if w in names[1:]]
+            """,
+            "O(len(names) * len(words))",
+            id="searching a slice of a list",
+        ),
+        pytest.param(
+            """
+            import heapq
+
+            def f(heap: list, items: list, k: int):
+                heapq.heappush(heap, 1)
+                return heapq.nsmallest(k, items)
+            """,
+            "O(len(items) * log(k) + log(len(heap)))",
+            id="heapq",
+        ),
+        pytest.param(
+            """
+            def f(text: str, words: list):
+                return [text.count(w) for w in words], ",".join(words)
+            """,
+            "O(len(text) * len(words))",
+            id="str.count scans the string; join goes through the pieces",
+        ),
+        pytest.param(
+            """
+            def f(a: list):
+                for x in a:
+                    a.pop()
+                    a.pop(0)
+            """,
+            "O(len(a)^2)",
+            id="pop() is O(1) but pop(0) shifts everything",
         ),
     ],
 )

@@ -3,7 +3,8 @@
 A ``Complexity`` is a sum of terms, and each term is a sorted tuple of factors:
 ``("len(a)", "len(a)", "n")`` means len(a)^2 * n, and the empty tuple is the
 constant term. Factors stay symbolic (instead of calling everything ``n``) so a
-report can say *which* input a cost depends on.
+report can say *which* input a cost depends on. A factor ``log(x)`` grows more
+slowly than ``x``, so O(n * log(n) + n^2) simplifies to O(n^2).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from .model import COMPREHENSIONS, LoopNode, ProgramModel
+from .model import COMPREHENSIONS, LoopNode, ProgramModel, infer_kind
 
 Term = tuple[str, ...]
 
@@ -119,9 +120,33 @@ def _simplify(terms: Iterable[Term]) -> frozenset[Term]:
 
 
 def _divides(small: Term, big: Term) -> bool:
-    """True if every factor of ``small`` appears in ``big`` at least as many times."""
+    """True if ``small`` grows no faster than ``big``.
+
+    Each factor of ``small`` must be matched by a different factor of ``big`` that
+    grows at least as fast: ``n`` only by ``n``, but ``log(n)`` by ``log(n)`` or ``n``.
+    """
     available = Counter(big)
-    return all(available[f] >= n for f, n in Counter(small).items())
+    logs = []
+    for factor in small:
+        if _log_argument(factor) is not None:
+            logs.append(factor)  # match these last, after exact matches are taken
+        elif available[factor]:
+            available[factor] -= 1
+        else:
+            return False
+    for factor in logs:
+        match = factor if available[factor] else _log_argument(factor)
+        if not available[match]:
+            return False
+        available[match] -= 1
+    return True
+
+
+def _log_argument(factor: str) -> str | None:
+    """``"n"`` for ``"log(n)"``; None if ``factor`` isn't a logarithm."""
+    if factor.startswith("log(") and _is_wrapped(factor[3:]):
+        return factor[4:-1]
+    return None
 
 
 # --- How many times does a loop run? -----------------------------------------
@@ -151,40 +176,88 @@ _SAME_LENGTH = {
     "tuple",
     "set",
     "frozenset",
+    "dict",
+    "Counter",
+    "OrderedDict",
+    "deque",
     "iter",
     "zip",
 }
+# Methods whose result has (at most) as many items as the object they're called on.
+# (`text.split()` can't produce more words than `text` has characters.)
+_SAME_LENGTH_METHODS = {"items", "keys", "values", "copy", "split", "rsplit", "splitlines"}
 
 
 def _length_of(expr: ast.expr) -> Complexity:
-    """Number of items produced by iterating over ``expr``."""
+    """Number of items in ``expr``, or produced by iterating over it."""
     if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
         if not any(isinstance(e, ast.Starred) for e in expr.elts):
             return ONE
-    elif isinstance(expr, ast.Constant):
-        return ONE
+    elif isinstance(expr, (ast.Constant, ast.JoinedStr)):
+        return ONE  # a literal, or an f-string (assumed short)
+    elif isinstance(expr, ast.Subscript) and isinstance(expr.slice, ast.Slice):
+        return _slice_length(expr)
+    elif isinstance(expr, COMPREHENSIONS):
+        return repeat_count(expr.generators)
+    elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        return _length_of(expr.left) + _length_of(expr.right)  # a + b, for lists
     elif isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.args:
-        if expr.func.id == "range":
-            return _range_length(expr.args)
-        if expr.func.id in _SAME_LENGTH:
-            return _length_of(expr.args[0])
-    elif (
-        isinstance(expr, ast.Call)
-        and isinstance(expr.func, ast.Attribute)
-        and expr.func.attr in ("items", "keys", "values")
-        and not expr.args
-    ):
-        return _length_of(expr.func.value)
+        name, args = expr.func.id, expr.args
+        if name == "range":
+            return _range_length(args)
+        if name in _SAME_LENGTH:
+            return _length_of(args[0])
+        if name in ("map", "filter") and len(args) >= 2:
+            return _length_of(args[1])
+    elif isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+        method = expr.func.attr
+        if method in _SAME_LENGTH_METHODS:
+            return _length_of(expr.func.value)
+        if method == "join" and len(expr.args) == 1:
+            return _length_of(expr.args[0])  # treating each piece as short
     return Complexity.of(f"len({ast.unparse(expr)})")
+
+
+def _slice_length(node: ast.Subscript) -> Complexity:
+    """Constant for ``x[:3]`` or ``x[-3:]``; otherwise up to the length of ``x``."""
+    lower, upper = _int_constant(node.slice.lower), _int_constant(node.slice.upper)
+    if upper is not None and upper >= 0:
+        return ONE
+    if node.slice.upper is None and lower is not None and lower < 0:
+        return ONE
+    return _length_of(node.value)
 
 
 def _range_length(args: list[ast.expr]) -> Complexity:
     # For big-O purposes the stop value bounds the count; the start value and a
     # constant step only change constant factors.
-    stop = _drop_constants(args[0] if len(args) == 1 else args[1])
-    if isinstance(stop, ast.Constant):
+    return _count(args[0] if len(args) == 1 else args[1])
+
+
+def _count(expr: ast.expr) -> Complexity:
+    """How big the number ``expr`` is, for big-O purposes: ``n + 1`` is O(n)."""
+    expr = _drop_constants(expr)
+    if isinstance(expr, ast.Constant):
         return ONE
-    return Complexity.of(ast.unparse(stop))
+    return Complexity.of(ast.unparse(expr))
+
+
+def _int_constant(expr: ast.expr | None) -> int | None:
+    """The value of an integer literal like ``3`` or ``-3``; None for anything else."""
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub):
+        value = _int_constant(expr.operand)
+        return None if value is None else -value
+    if isinstance(expr, ast.Constant) and type(expr.value) is int:
+        return expr.value
+    return None
+
+
+def _log(size: Complexity) -> Complexity:
+    """O(log(size)). Uses log(n * m) = log(n) + log(m); the log of a constant is O(1)."""
+    total = ONE
+    for factor in sorted({f for term in size.terms for f in term}):
+        total = total + Complexity.of(f"log({factor})")
+    return total
 
 
 def _drop_constants(expr: ast.expr) -> ast.expr:
@@ -206,9 +279,10 @@ def _drop_constants(expr: ast.expr) -> ast.expr:
 def estimate(body: list[ast.stmt], model: ProgramModel) -> Complexity:
     """Estimate the running time of ``body`` from its loop structure.
 
-    A loop multiplies the cost of its body by its iteration count. Everything
-    else is O(1), apart from the few operations in ``_operation_cost``. Calls to
-    other functions also count as O(1) for now (see ROADMAP.md, month 2).
+    A loop multiplies the cost of its body by its iteration count. Built-ins with
+    a known cost (sorting, slicing, `max`, `set(...)`, `heapq`, ...) are listed in
+    ``_operation_cost``; everything else is O(1). That includes calls to the
+    program's own functions, for now (see ROADMAP.md, month 2).
     """
     return _block_cost(body, model)
 
@@ -254,8 +328,41 @@ def _comprehension_cost(node: ast.expr, model: ProgramModel) -> Complexity:
     return inner
 
 
-# List methods whose running time grows with the length of the list.
+# Built-in functions that go through their whole (single) argument.
+_LINEAR_BUILTINS = {
+    "list",
+    "tuple",
+    "set",
+    "frozenset",
+    "dict",
+    "Counter",
+    "OrderedDict",
+    "deque",
+    "min",
+    "max",
+    "sum",
+    "any",
+    "all",
+}
+# Modules whose functions are called as `module.function(...)`.
+_MODULES = {"heapq", "bisect", "collections"}
+_HEAP_OPERATIONS = {"heappush", "heappop", "heappushpop", "heapreplace"}  # O(log n)
+_BISECT_SEARCHES = {"bisect", "bisect_left", "bisect_right"}  # O(log n)
+_BISECT_INSERTS = {"insort", "insort_left", "insort_right"}  # O(n): shifts items over
+
+# Methods whose running time grows with the length of the list or string.
 _LINEAR_LIST_METHODS = {"index", "count", "remove", "insert", "copy", "reverse"}
+_LINEAR_STR_METHODS = {
+    "count",
+    "find",
+    "index",
+    "replace",
+    "split",
+    "rsplit",
+    "lower",
+    "upper",
+    "strip",
+}
 
 
 def _operation_cost(node: ast.AST, model: ProgramModel) -> Complexity:
@@ -263,26 +370,65 @@ def _operation_cost(node: ast.AST, model: ProgramModel) -> Complexity:
     if isinstance(node, ast.Compare):
         cost = ONE
         for op, right in zip(node.ops, node.comparators, strict=True):
-            if (
-                isinstance(op, (ast.In, ast.NotIn))
-                and isinstance(right, ast.Name)
-                and model.kind_of(right) == "list"
-            ):
-                cost = cost + Complexity.of(f"len({right.id})")
+            if isinstance(op, (ast.In, ast.NotIn)) and _kind(right, model) == "list":
+                cost = cost + _length_of(right)  # checks the items one by one
         return cost
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and model.kind_of(node.func.value) == "list"
-    ):
-        method, name = node.func.attr, node.func.value.id
-        pops_front = (
-            method == "pop"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value == 0
-        )
-        if method in _LINEAR_LIST_METHODS or pops_front:
-            return Complexity.of(f"len({name})")
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+        return _slice_length(node)  # slicing copies the items
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        if {_kind(node.left, model), _kind(node.right, model)} & {"list", "tuple"}:
+            return _length_of(node.left) + _length_of(node.right)  # builds a new list
+        return ONE
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name):
+            return _function_cost(func.id, node.args)
+        if isinstance(func, ast.Attribute):
+            if isinstance(func.value, ast.Name) and func.value.id in _MODULES:
+                return _function_cost(func.attr, node.args)
+            return _method_cost(func.attr, func.value, node.args, model)
     return ONE
+
+
+def _function_cost(name: str, args: list[ast.expr]) -> Complexity:
+    if not args:
+        return ONE
+    if name in ("nsmallest", "nlargest") and len(args) >= 2:
+        return _length_of(args[1]) * _log(_count(args[0]))  # heapq.nsmallest(k, items)
+    size = _length_of(args[0])
+    if name == "sorted":
+        return size * _log(size)
+    if name == "heapify" or name in _BISECT_INSERTS:
+        return size
+    if name in _HEAP_OPERATIONS or name in _BISECT_SEARCHES:
+        return _log(size)
+    if name in _LINEAR_BUILTINS and len(args) == 1:  # max(items), but not max(a, b)
+        return size
+    return ONE
+
+
+def _method_cost(
+    method: str, receiver: ast.expr, args: list[ast.expr], model: ProgramModel
+) -> Complexity:
+    if method == "join" and len(args) == 1:
+        return _length_of(args[0])
+    kind = _kind(receiver, model)
+    size = _length_of(receiver)
+    if kind == "list":
+        if method == "sort":
+            return size * _log(size)
+        pops_front = method == "pop" and bool(args) and _int_constant(args[0]) == 0
+        if method in _LINEAR_LIST_METHODS or pops_front:
+            return size
+    if kind == "str" and method in _LINEAR_STR_METHODS:
+        return size
+    return ONE
+
+
+def _kind(expr: ast.expr, model: ProgramModel) -> str | None:
+    """Like ``model.kind_of``, but for any expression: a slice of a list is a list."""
+    if isinstance(expr, ast.Name):
+        return model.kind_of(expr)
+    if isinstance(expr, ast.Subscript) and isinstance(expr.slice, ast.Slice):
+        return _kind(expr.value, model)
+    return infer_kind(expr)
